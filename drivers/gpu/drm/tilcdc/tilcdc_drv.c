@@ -78,7 +78,6 @@ static int modeset_init(struct drm_device *dev)
 	if ((priv->num_encoders == 0) || (priv->num_connectors == 0)) {
 		/* oh nos! */
 		dev_err(dev->dev, "no encoders/connectors found\n");
-		drm_mode_config_cleanup(dev);
 		return -ENXIO;
 	}
 
@@ -171,37 +170,33 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 	dev->dev_private = priv;
 
 	priv->wq = alloc_ordered_workqueue("tilcdc", 0);
-	if (!priv->wq) {
-		ret = -ENOMEM;
-		goto fail_free_priv;
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
 		dev_err(dev->dev, "failed to get memory resource\n");
 		ret = -EINVAL;
-		goto fail_free_wq;
+		goto fail;
 	}
 
 	priv->mmio = ioremap_nocache(res->start, resource_size(res));
 	if (!priv->mmio) {
 		dev_err(dev->dev, "failed to ioremap\n");
 		ret = -ENOMEM;
-		goto fail_free_wq;
+		goto fail;
 	}
 
 	priv->clk = clk_get(dev->dev, "fck");
 	if (IS_ERR(priv->clk)) {
 		dev_err(dev->dev, "failed to get functional clock\n");
 		ret = -ENODEV;
-		goto fail_iounmap;
+		goto fail;
 	}
 
 	priv->disp_clk = clk_get(dev->dev, "dpll_disp_ck");
 	if (IS_ERR(priv->clk)) {
 		dev_err(dev->dev, "failed to get display clock\n");
 		ret = -ENODEV;
-		goto fail_put_clk;
+		goto fail;
 	}
 
 #ifdef CONFIG_CPU_FREQ
@@ -211,7 +206,7 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 			CPUFREQ_TRANSITION_NOTIFIER);
 	if (ret) {
 		dev_err(dev->dev, "failed to register cpufreq notifier\n");
-		goto fail_put_disp_clk;
+		goto fail;
 	}
 #endif
 
@@ -243,13 +238,13 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 	ret = modeset_init(dev);
 	if (ret < 0) {
 		dev_err(dev->dev, "failed to initialize mode setting\n");
-		goto fail_cpufreq_unregister;
+		goto fail;
 	}
 
 	ret = drm_vblank_init(dev, 1);
 	if (ret < 0) {
 		dev_err(dev->dev, "failed to initialize vblank\n");
-		goto fail_mode_config_cleanup;
+		goto fail;
 	}
 
 	pm_runtime_get_sync(dev->dev);
@@ -257,7 +252,7 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 	pm_runtime_put_sync(dev->dev);
 	if (ret < 0) {
 		dev_err(dev->dev, "failed to install IRQ handler\n");
-		goto fail_vblank_cleanup;
+		goto fail;
 	}
 
 	platform_set_drvdata(pdev, dev);
@@ -265,48 +260,13 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 	priv->fbdev = drm_fbdev_cma_init(dev, 16,
 			dev->mode_config.num_crtc,
 			dev->mode_config.num_connector);
-	if (IS_ERR(priv->fbdev)) {
-		ret = PTR_ERR(priv->fbdev);
-		goto fail_irq_uninstall;
-	}
 
 	drm_kms_helper_poll_init(dev);
 
 	return 0;
 
-fail_irq_uninstall:
-	pm_runtime_get_sync(dev->dev);
-	drm_irq_uninstall(dev);
-	pm_runtime_put_sync(dev->dev);
-
-fail_vblank_cleanup:
-	drm_vblank_cleanup(dev);
-
-fail_mode_config_cleanup:
-	drm_mode_config_cleanup(dev);
-
-fail_cpufreq_unregister:
-	pm_runtime_disable(dev->dev);
-#ifdef CONFIG_CPU_FREQ
-	cpufreq_unregister_notifier(&priv->freq_transition,
-			CPUFREQ_TRANSITION_NOTIFIER);
-fail_put_disp_clk:
-	clk_put(priv->disp_clk);
-#endif
-
-fail_put_clk:
-	clk_put(priv->clk);
-
-fail_iounmap:
-	iounmap(priv->mmio);
-
-fail_free_wq:
-	flush_workqueue(priv->wq);
-	destroy_workqueue(priv->wq);
-
-fail_free_priv:
-	dev->dev_private = NULL;
-	kfree(priv);
+fail:
+	tilcdc_unload(dev);
 	return ret;
 }
 
